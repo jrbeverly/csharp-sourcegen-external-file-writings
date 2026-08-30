@@ -1,0 +1,89 @@
+<Project>
+
+  <!--
+    MSBuild-owned file emission: lifts the manifest that the source generator
+    surfaces as a generated const string and writes it as permissions.json next
+    to the assembly. The generator never touches the filesystem; this target
+    owns the write.
+  -->
+  <UsingTask TaskName="LiftPermissionManifest"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <GeneratedFile ParameterType="System.String" Required="true" />
+      <ManifestFile ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Text" />
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Code Type="Fragment" Language="cs">
+<![CDATA[
+if (!File.Exists(GeneratedFile))
+{
+    Log.LogError("Generated manifest not found: " + GeneratedFile);
+    return false;
+}
+
+string source = File.ReadAllText(GeneratedFile);
+Match match = Regex.Match(source, "public const string Json = \"((?:\\\\.|[^\"\\\\])*)\"");
+if (!match.Success)
+{
+    Log.LogError("No Json constant in generated manifest: " + GeneratedFile);
+    return false;
+}
+
+var json = new StringBuilder();
+string literal = match.Groups[1].Value;
+for (var i = 0; i < literal.Length; i++)
+{
+    char c = literal[i];
+    if (c != '\\')
+    {
+        json.Append(c);
+        continue;
+    }
+
+    if (++i >= literal.Length)
+    {
+        break;
+    }
+
+    switch (literal[i])
+    {
+        case '"': json.Append('"'); break;
+        case '\\': json.Append('\\'); break;
+        case 'n': json.Append('\n'); break;
+        case 'r': json.Append('\r'); break;
+        case 't': json.Append('\t'); break;
+        case 'b': json.Append('\b'); break;
+        case 'f': json.Append('\f'); break;
+        case 'u':
+            if (i + 4 < literal.Length)
+            {
+                json.Append((char)Convert.ToInt32(literal.Substring(i + 1, 4), 16));
+                i += 4;
+            }
+            break;
+        default: json.Append(literal[i]); break;
+    }
+}
+
+Directory.CreateDirectory(Path.GetDirectoryName(ManifestFile));
+File.WriteAllText(ManifestFile, json.ToString());
+]]>
+      </Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="EmitPermissionManifest" AfterTargets="Build">
+    <ItemGroup>
+      <PermissionManifestGenerated Include="$(CompilerGeneratedFilesOutputPath)/**/PermissionManifest.g.cs" />
+    </ItemGroup>
+
+    <LiftPermissionManifest GeneratedFile="@(PermissionManifestGenerated)"
+                            ManifestFile="$(OutDir)permissions.json" />
+  </Target>
+
+</Project>
